@@ -52,7 +52,6 @@ Diferente do Problema 1 (que adotava um Broker Central em formato Cliente-Servid
 │   ├── sensor/                # Emulador Automático de Sensores
 │   ├── sensor_manual/         # Interface para interação/demonstração
 │   ├── teste/                 # Script de teste de concorrência massiva
-│   └── dashboard/             # Interface via terminal do status geral
 ├── compartilhado/             # Estruturas de dados globais (Modelos JSON)
 ├── modulos_internos/
 │   ├── exclusao_mutua/        # Lógica de Ricart-Agrawala e Broadcast P2P
@@ -77,16 +76,12 @@ docker build -f empacotamento_docker/dockerfile.drone       -t alissonwilkersc/d
 docker build -f empacotamento_docker/dockerfile.sensor      -t alissonwilkersc/sensor:v1 .
 docker build -f empacotamento_docker/dockerfile.sensor_manual -t alissonwilkersc/sensor_manual:v1 .
 docker build -f empacotamento_docker/dockerfile.teste       -t alissonwilkersc/teste:v1 .
-docker build -f empacotamento_docker/dockerfile.dashboard   -t alissonwilkersc/dashboard:v1 .
 ```
 
-### Passo 2: Executar Gerenciadores (Brokers) e Dashboard
+### Passo 2: Executar Gerenciadores (Brokers) 
 
-> O Dashboard precisa rodar na mesma máquina que os Gerenciadores (usa o volume `/tmp` para leitura de ficheiros partilhados).
 
 ```bash
-# Dashboard (Em um terminal isolado)
-docker run -it --rm -v /tmp:/tmp alissonwilkersc/dashboard:v1
 
 # Gerenciador Setor A (Usa porta 5010 para Sensores e 6000 para P2P)
 docker run -it --rm -p 5010:5010 -p 6000:6000 alissonwilkersc/gerenciador:v1 \
@@ -138,7 +133,7 @@ docker run -it --rm alissonwilkersc/sensor_manual:v1 <SEU_IP_AQUI>:5010 A
 
 ## Comportamentos Automáticos de Tolerância a Falhas
 
-Para garantir que o requisito **REQ 4** (nenhuma ocorrência seja perdida) seja estritamente cumprido mesmo sob falhas de rede:
+Para garantir que o requisito "nenhuma ocorrência seja perdida" seja cumprido mesmo sob falhas de rede:
 
 **Double-Check e Shadowing Local:** Antes de libertar a exclusão mútua (Mutex), o Gerenciador marca ativamente a zona do drone na sua tabela local, evitando desperdício operacional (dois drones monitorizando o mesmo setor em simultâneo).
 
