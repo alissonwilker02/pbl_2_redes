@@ -1,24 +1,22 @@
 package main
 
+
 import (
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"time"
+
 	"pbl_2_redes/compartilhado"
 	exclusaomutua "pbl_2_redes/modulos_internos/exclusao_mutua"
 	rede_p2p "pbl_2_redes/modulos_internos/rede_p2p"
 	servidor_local "pbl_2_redes/modulos_internos/servidor_local"
 )
 
-
-// main é a função principal que inicializa o gerenciador do setor. Ela valida os argumentos de linha 
-// de comando, configura o estado global do setor, armazena os vizinhos, inicia os servidores P2P e 
-// local (sensores/drones) em goroutines separadas e dispara os loops contínuos de despacho e 
-// monitoramento de saúde dos drones.
 func main() {
 	if len(os.Args) < 6 {
 		fmt.Println("Uso: go run main.go <Setor> <Porta_Sensores> <Porta_P2P> <SetorViz1:IP:Porta> <SetorViz2:IP:Porta>")
@@ -44,7 +42,7 @@ func main() {
 	}
 
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║       🛰  GERENCIADOR DO SETOR %-3s — ESTREITO DE ORMUZ  ║\n", setorID)
+	fmt.Printf("║          GERENCIADOR DO SETOR %-3s — ESTREITO DE ORMUZ  ║\n", setorID)
 	fmt.Printf("╠══════════════════════════════════════════════════════════╣\n")
 	fmt.Printf("║  Porta sensores : %-5s                                  ║\n", portaSensores)
 	fmt.Printf("║  Porta P2P      : %-5s                                  ║\n", portaP2P)
@@ -59,27 +57,19 @@ func main() {
 	go servidor_local.IniciarServidorLocal(":"+portaSensores, estadoGlobal)
 	go loopDespacho(estadoGlobal, vizinhos)
 	go loopHealthCheckDrones(estadoGlobal)
+	go loopEnvelhecimento(estadoGlobal)
 
 	select {}
 }
 
-
-
-
-
-
 // ============================================================
 // LOOP DE DESPACHO
 // ============================================================
-// loopDespacho é uma rotina contínua que processa a fila de ocorrências do setor. Ela ignora eventos 
-// normais, utiliza o algoritmo de Ricart-Agrawala para solicitar acesso exclusivo na rede, verifica se o 
-// setor alvo já está sendo atendido e, caso haja um drone livre, despacha a missão. Caso contrário ou em 
-// caso de falhas, re-enfileira a ocorrência.
 func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 	for {
 		time.Sleep(2 * time.Second)
 
-		// Imprime status atual a cada ciclo — terminal sempre informativo
+		// Imprime status atual a cada ciclo
 		imprimirStatusContinuo(estado)
 
 		ocorrencia := estado.ProximaOcorrencia()
@@ -87,12 +77,16 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 			continue
 		}
 
-		// Único descarte legítimo: eventos de monitoramento Normal
+		// eventos de monitoramento Normal
 		if ocorrencia.TipoEvento == "Normal" {
 			logFase("MONITOR", estado.Setor, "Evento Normal — nenhuma ação necessária.")
 			continue
 		}
-		
+
+		//  setor já tem drone em missão? ─────────────────────────
+		// re-enfileira para tentar mais tarde.
+		// A ocorrência fica na fila até o drone atual terminar ou outro
+		// drone ficar disponível.
 		if estado.SetorJaAtendido(ocorrencia.Setor) {
 			logFase("REQ-3", estado.Setor,
 				fmt.Sprintf("Setor %s já monitorado. Re-enfileirando '%s' para atender depois.",
@@ -106,13 +100,37 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 			fmt.Sprintf("'%s' (crit %d) — solicitando acesso exclusivo...",
 				ocorrencia.TipoEvento, ocorrencia.Criticidade))
 
-		exclusaomutua.SolicitarAcessoRecurso(estado, vizinhos)
+		exclusaomutua.SolicitarAcessoRecurso(estado, vizinhos, ocorrencia.Criticidade, ocorrencia.Timestamp)
 		exclusaomutua.AguardarPermissao(estado)
 
-		logFase("MUTEX", estado.Setor, "HELD — seção crítica obtida.")
+		logFase("MUTEX", estado.Setor, "  HELD — seção crítica obtida.")
 
-		
-		// Necessário porque outro broker pode ter despachado para este setor
+		// ── PREEMPÇÃO DE PRIORIDADE  ───────────────────────
+		// Durante a espera pelos REPLYs pode ter chegado uma ocorrência mais
+		// crítica (ou com mesmo crit mas timestamp mais antigo). Se isso
+		// aconteceu, devolvemos a ocorrência atual à fila e liberamos o mutex
+		// para que o próximo ciclo dispute com a prioridade correta.
+		if topo := estado.TopoFila(); topo != nil {
+			topoVence := false
+			if topo.Criticidade > ocorrencia.Criticidade {
+				topoVence = true
+			} else if topo.Criticidade == ocorrencia.Criticidade &&
+				topo.Timestamp.Before(ocorrencia.Timestamp) {
+				topoVence = true
+			}
+			if topoVence {
+				logFase("MUTEX", estado.Setor,
+					fmt.Sprintf("  Preempção: topo da fila (crit %d, ts %s) supera atual (crit %d, ts %s). Re-enfileirando e liberando mutex.",
+						topo.Criticidade, topo.Timestamp.Format("15:04:05.000"),
+						ocorrencia.Criticidade, ocorrencia.Timestamp.Format("15:04:05.000")))
+				exclusaomutua.LiberarRecurso(estado, vizinhos)
+				estado.AdicionarOcorrencia(*ocorrencia)
+				continue
+			}
+		}
+
+		// ── DOUBLE-CHECK  dentro da seção crítica ───────────────────
+		// outro broker pode ter despachado para este setor
 		// enquanto aguardávamos os REPLYs do Ricart-Agrawala.
 		if estado.SetorJaAtendido(ocorrencia.Setor) {
 			logFase("REQ-3", estado.Setor,
@@ -132,7 +150,7 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 			logFase("DRONE", estado.Setor,
 				fmt.Sprintf("Drone encontrado: %s em %s", droneLivre.IDDrone, droneLivre.Endereco))
 
-			// marca EM_MISSAO localmente antes de liberar mutex
+			// Shadow status: marca EM_MISSAO localmente antes de liberar mutex
 			estado.Mu.Lock()
 			tmp := estado.TabelaDrones[droneLivre.IDDrone]
 			tmp.Status = "EM_MISSAO"
@@ -145,10 +163,10 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 					ocorrencia.TipoEvento, droneLivre.IDDrone))
 
 			if enviarMissaoAoDrone(droneLivre, ocorrencia) {
-				// registra missão ativa para recuperação futura
+				// Sucesso: registra missão ativa para recuperação futura
 				estado.RegistrarMissao(droneLivre.IDDrone, *ocorrencia)
 				logFase("MISSÃO", estado.Setor,
-					fmt.Sprintf("Missão '%s' entregue ao drone %s.",
+					fmt.Sprintf(" Missão '%s' entregue ao drone %s.",
 						ocorrencia.TipoEvento, droneLivre.IDDrone))
 				servidor_local.LogarEstado(estado,
 					fmt.Sprintf("Drone %s → missão '%s' no setor %s",
@@ -156,10 +174,10 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 			} else {
 				// Falha no envio: drone estava offline antes de decolar
 				logFase("ERRO", estado.Setor,
-					fmt.Sprintf("Falha ao contatar drone %s. Re-enfileirando missão.",
+					fmt.Sprintf(" Falha ao contatar drone %s. Re-enfileirando missão.",
 						droneLivre.IDDrone))
 
-				// Reverte  status
+				// Reverte shadow status
 				estado.Mu.Lock()
 				tmp := estado.TabelaDrones[droneLivre.IDDrone]
 				tmp.Status = "DISPONIVEL"
@@ -167,7 +185,7 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 				estado.TabelaDrones[droneLivre.IDDrone] = tmp
 				estado.Mu.Unlock()
 
-				// Re-enfileira — NÃO perde a ocorrência
+				// Re-enfileira
 				estado.AdicionarOcorrencia(*ocorrencia)
 			}
 		} else {
@@ -181,21 +199,72 @@ func loopDespacho(estado *servidor_local.EstadoGerenciador, vizinhos []string) {
 		// Libera mutex para outros setores
 		exclusaomutua.LiberarRecurso(estado, vizinhos)
 		servidor_local.LogarEstado(estado, "Mutex liberado (RELEASED)")
-		logFase("MUTEX", estado.Setor, "RELEASED.")
+		logFase("MUTEX", estado.Setor, " RELEASED.")
 	}
 }
 
+// ============================================================
+// ENVELHECIMENTO — aumenta criticidade de ocorrências paradas
+// ============================================================
+// A cada 1 minuto, percorre a fila e incrementa em +1 a criticidade
+// de toda ocorrência que ainda não foi atendida, respeitando o teto 5.
+// Após atualizar, re-ordena a fila para que ocorrências
+// subam para a posição correta.
 
+func loopEnvelhecimento(estado *servidor_local.EstadoGerenciador) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
 
+	for range ticker.C {
+		estado.Mu.Lock()
 
-// loopHealthCheckDrones monitora periodicamente a conectividade com os drones registrados efetuando pings 
-// via TCP. Se um drone parar de responder, ele é removido da frota (se estava disponível) ou sua missão 
-// é cancelada, recuperada e devolvida para a fila de ocorrências (se estava em missão).
+		promovidas := 0
+		for i := range estado.FilaOcorrencias {
+			oc := &estado.FilaOcorrencias[i]
+			if oc.TipoEvento == "Normal" {
+				continue
+			}
+			if oc.Criticidade < 5 {
+				oc.Criticidade++
+				promovidas++
+			}
+		}
+
+		if promovidas > 0 {
+			// Re-ordena para posicionar promovidas corretamente
+			sort.SliceStable(estado.FilaOcorrencias, func(i, j int) bool {
+				a, b := estado.FilaOcorrencias[i], estado.FilaOcorrencias[j]
+				if a.Criticidade != b.Criticidade {
+					return a.Criticidade > b.Criticidade
+				}
+				return a.Timestamp.Before(b.Timestamp)
+			})
+		}
+
+		estado.Mu.Unlock()
+
+		if promovidas > 0 {
+			logFase("AGING", estado.Setor,
+				fmt.Sprintf(" Envelhecimento: %d ocorrência(s) tiveram criticidade aumentada.", promovidas))
+			servidor_local.LogarEstado(estado, fmt.Sprintf("Envelhecimento aplicado — %d ocorrências promovidas", promovidas))
+		}
+	}
+}
+
+// ============================================================
+// HEALTH CHECK — testa TODOS os drones
+// ============================================================
+// Roda a cada 10s. Para cada drone na tabela:
+//   - Testa conectividade TCP
+//   - Se DISPONIVEL e não responde → remove da tabela
+//     (estava offline mas ainda aparecia como disponível)
+//   - Se EM_MISSAO e não responde → reverte para DISPONIVEL,
+//     recupera a ocorrência e re-enfileira (nenhuma missão perdida)
 func loopHealthCheckDrones(estado *servidor_local.EstadoGerenciador) {
 	for {
 		time.Sleep(10 * time.Second)
 
-		
+		// Snapshot de todos os drones sem segurar lock durante TCP
 		estado.Mu.Lock()
 		todosDrones := make([]compartilhado.StatusDrone, 0, len(estado.TabelaDrones))
 		for _, d := range estado.TabelaDrones {
@@ -215,8 +284,7 @@ func loopHealthCheckDrones(estado *servidor_local.EstadoGerenciador) {
 				switch drone.Status {
 
 				case "DISPONIVEL":
-					// Estava disponível mas não responde - remove da tabela
-					// (provavelmente foi derrubado)
+					// Estava disponível mas não responde → remove da tabela
 					logFase("HEALTH", estado.Setor,
 						fmt.Sprintf(" Drone %s (DISPONIVEL) não responde → removendo da frota.",
 							drone.IDDrone))
@@ -227,9 +295,9 @@ func loopHealthCheckDrones(estado *servidor_local.EstadoGerenciador) {
 						fmt.Sprintf("Drone %s removido da frota (offline)", drone.IDDrone))
 
 				case "EM_MISSAO":
-					// Estava em missão mas não responde - caiu durante a missão
+					// Estava em missão mas não responde 
 					logFase("HEALTH", estado.Setor,
-						fmt.Sprintf(" Drone %s (EM_MISSAO) caiu. Recuperando missão...",
+						fmt.Sprintf("  Drone %s (EM_MISSAO) caiu. Recuperando missão...",
 							drone.IDDrone))
 
 					// MarcarDroneOffline reverte status E extrai missão em andamento
@@ -237,14 +305,14 @@ func loopHealthCheckDrones(estado *servidor_local.EstadoGerenciador) {
 
 					if missao != nil {
 						logFase("HEALTH", estado.Setor,
-							fmt.Sprintf(" Missão '%s' (crit %d) recuperada → re-enfileirando.",
+							fmt.Sprintf("  Missão '%s' (crit %d) recuperada → re-enfileirando.",
 								missao.Ocorrencia.TipoEvento,
 								missao.Ocorrencia.Criticidade))
 						// Re-enfileira com timestamp ORIGINAL para preservar prioridade
 						estado.AdicionarOcorrencia(missao.Ocorrencia)
 					} else {
 						logFase("HEALTH", estado.Setor,
-							fmt.Sprintf("ℹ Drone %s sem missão registrada — apenas revertendo status.",
+							fmt.Sprintf("  Drone %s sem missão registrada — apenas revertendo status.",
 								drone.IDDrone))
 					}
 					servidor_local.LogarEstado(estado,
@@ -253,17 +321,15 @@ func loopHealthCheckDrones(estado *servidor_local.EstadoGerenciador) {
 
 			} else {
 				conn.Close()
-				// Drone respondeu — está vivo, sem ação necessária
+				// Drone respondeu 
 			}
 		}
 	}
 }
 
-
-
-// imprimirStatusContinuo exibe de forma formatada no terminal o status geral em tempo real do setor,
-// incluindo a condição atual do mutex, listagem das missões em execução, o conteúdo da fila de 
-// ocorrências aguardando atendimento e a relação de drones disponíveis e ocupados.
+// ============================================================
+// STATUS
+// ============================================================
 func imprimirStatusContinuo(estado *servidor_local.EstadoGerenciador) {
 	estado.Mu.Lock()
 
@@ -314,7 +380,7 @@ func imprimirStatusContinuo(estado *servidor_local.EstadoGerenciador) {
 
 	// Missões ativas
 	if len(missoes) == 0 {
-		fmt.Printf("\033[90m│\033[0m  Execução : \033[90mnenhuma missão ativa\033[0m                          \033[90m│\033[0m\n")
+		fmt.Printf("\033[90m│\033[0m    Execução : \033[90mnenhuma missão ativa\033[0m                          \033[90m│\033[0m\n")
 	} else {
 		for _, m := range missoes {
 			ev := m.Ocorrencia.TipoEvento
@@ -322,14 +388,14 @@ func imprimirStatusContinuo(estado *servidor_local.EstadoGerenciador) {
 				ev = ev[:22] + ".."
 			}
 			duracao := time.Since(m.IniciadaEm).Round(time.Second)
-			fmt.Printf("\033[90m│\033[0m  Execução : \033[33m%-12s\033[0m → \033[32m%-18s\033[0m há %v \033[90m│\033[0m\n",
+			fmt.Printf("\033[90m│\033[0m    Execução : \033[33m%-12s\033[0m → \033[32m%-18s\033[0m há %v \033[90m│\033[0m\n",
 				m.DroneID, ev, duracao)
 		}
 	}
 
 	// Fila pendente
 	if len(fila) == 0 {
-		fmt.Printf("\033[90m│\033[0m   Fila     : \033[90mvazia\033[0m                                         \033[90m│\033[0m\n")
+		fmt.Printf("\033[90m│\033[0m    Fila     : \033[90mvazia\033[0m                                         \033[90m│\033[0m\n")
 	} else {
 		for i, oc := range fila {
 			seta := "  "
@@ -358,20 +424,14 @@ func imprimirStatusContinuo(estado *servidor_local.EstadoGerenciador) {
 	if len(dronesEmMissao) > 0 {
 		missaoStr = "\033[33m" + strings.Join(dronesEmMissao, ", ") + "\033[0m"
 	}
-	fmt.Printf("\033[90m│\033[0m    Disponív : %-50s\033[90m│\033[0m\n", dispStr)
-	fmt.Printf("\033[90m│\033[0m    Em missão : %-50s\033[90m│\033[0m\n", missaoStr)
+	fmt.Printf("\033[90m│\033[0m     Disponív : %-50s\033[90m│\033[0m\n", dispStr)
+	fmt.Printf("\033[90m│\033[0m     Em missão : %-50s\033[90m│\033[0m\n", missaoStr)
 	fmt.Printf("\033[90m└──────────────────────────────────────────────────────────┘\033[0m\n")
 }
-
-
-
 
 // ============================================================
 // ENVIAR MISSAO AO DRONE
 // ============================================================
-// enviarMissaoAoDrone tenta abrir uma conexão TCP com um drone e enviar, em formato JSON,
-// as diretrizes da missão a ser executada. Retorna verdadeiro se o envio for concluído com
-// sucesso ou falso caso não consiga estabelecer a conexão.
 func enviarMissaoAoDrone(drone *compartilhado.StatusDrone, oc *compartilhado.Ocorrencia) bool {
 	missao := compartilhado.ComandoDrone{
 		Acao:        "RECONHECIMENTO_" + oc.TipoEvento,
@@ -388,15 +448,9 @@ func enviarMissaoAoDrone(drone *compartilhado.StatusDrone, oc *compartilhado.Oco
 	return err == nil
 }
 
-
-
-
 // ============================================================
 // LOG POR FASE
 // ============================================================
-// logFase é uma função utilitária para registrar atividades no terminal. Ela recebe a fase atual da 
-// execução (como MUTEX, MISSÃO ou ERRO), o setor e uma mensagem, imprimindo-os de maneira categorizada
-// e colorida para facilitar o rastreamento visual dos eventos.
 func logFase(fase, setor, msg string) {
 	hora := time.Now().Format("15:04:05")
 	cores := map[string]string{
@@ -408,6 +462,7 @@ func logFase(fase, setor, msg string) {
 		"ERRO":    "\033[31m",
 		"FILA":    "\033[33m",
 		"HEALTH":  "\033[34m",
+		"AGING":   "\033[95m",
 	}
 	cor := cores[fase]
 	if cor == "" {
@@ -416,15 +471,9 @@ func logFase(fase, setor, msg string) {
 	fmt.Printf("%s[%s][Setor %s][%-7s]\033[0m %s\n", cor, hora, setor, fase, msg)
 }
 
-
-
-
 // ============================================================
 // BARRA DE CRITICIDADE COM COR
 // ============================================================
-// baraCritCor cria uma representação visual (uma barra de progresso) da criticidade de uma ocorrência,
-// que vai de 1 a 5. A função retorna uma string com blocos preenchidos e vazios, pintados nas cores
-// verde (baixa), amarela (média) ou vermelha (alta), dependendo do nível de urgência.
 func baraCritCor(crit int) string {
 	cores := map[int]string{1: "\033[32m", 2: "\033[32m", 3: "\033[33m", 4: "\033[33m", 5: "\033[31m"}
 	cor := cores[crit]
@@ -437,15 +486,9 @@ func baraCritCor(crit int) string {
 	return cor + "[" + p + "\033[90m" + v + "\033[0m" + cor + "]" + "\033[0m"
 }
 
-
-
-
 // ============================================================
 // PARSEAR VIZINHO
 // ============================================================
-// parsearVizinho processa a string recebida via argumento de linha de comando que representa um setor vizinho.
-// Ele divide o formato "Setor:IP:Porta" para separar e retornar o identificador do setor e o seu respectivo
-// endereço de conexão.
 func parsearVizinho(arg string) (string, string) {
 	for i, c := range arg {
 		if c == ':' && i > 0 {

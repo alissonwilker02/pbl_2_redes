@@ -11,16 +11,20 @@ import (
 // ============================================================
 // REQUISICAO PENDENTE — fila do Ricart-Agrawala
 // ============================================================
+// Guarda TODOS os campos necessários para ordenar corretamente
+// quem deve receber o próximo REPLY ao liberar o recurso.
+//
+
 type RequisicaoPendente struct {
-	SetorOrigem string
-	Relogio     int
-	Prioridade  int
+	SetorOrigem         string
+	Relogio             int
+	Criticidade         int       // criticidade da ocorrência 
+	TimestampOcorrencia time.Time // timestamp real da detecção pelo sensor
 }
 
 // ============================================================
-// MISSAO EM ANDAMENTO — rastreia ocorrência ativa por drone
+// MISSAO EM ANDAMENTO
 // ============================================================
-// Permite que o health check recupere a missão se o drone cair.
 type MissaoEmAndamento struct {
 	DroneID    string
 	Ocorrencia compartilhado.Ocorrencia
@@ -31,31 +35,41 @@ type MissaoEmAndamento struct {
 // ESTADO GERENCIADOR
 // ============================================================
 type EstadoGerenciador struct {
-	Setor                  string
-	FilaOcorrencias        []compartilhado.Ocorrencia
-	RelogioLamport         int
-	EstadoMutex            string
-	RespostasAguardadas    int
-	RelogioMinhaRequisicao int
-	RequisicoesPendentes   []RequisicaoPendente
-	CanalPermissao         chan struct{}
-	TabelaDrones           map[string]compartilhado.StatusDrone
-	MissoesEmAndamento     map[string]MissaoEmAndamento
-	Mu                     sync.Mutex
+	Setor           string
+	FilaOcorrencias []compartilhado.Ocorrencia
+	RelogioLamport  int
+
+	// === RICART-AGRAWALA ===
+	EstadoMutex             string
+	RespostasAguardadas     int
+	RelogioMinhaRequisicao  int
+	CritMinhaRequisicao     int       // criticidade da ocorrência atual
+	TimestampMinhaRequisicao time.Time // timestamp da detecção atual
+
+	// Fila de pendentes — ordenada antes de enviar REPLYs
+	RequisicoesPendentes []RequisicaoPendente
+
+	CanalPermissao chan struct{}
+	Mu             sync.Mutex
+
+	TabelaDrones       map[string]compartilhado.StatusDrone
+	MissoesEmAndamento map[string]MissaoEmAndamento
 }
 
 func NovoEstado(setor string) *EstadoGerenciador {
 	return &EstadoGerenciador{
-		Setor:                  setor,
-		FilaOcorrencias:        make([]compartilhado.Ocorrencia, 0),
-		RelogioLamport:         0,
-		EstadoMutex:            "RELEASED",
-		RespostasAguardadas:    0,
-		RelogioMinhaRequisicao: 0,
-		RequisicoesPendentes:   make([]RequisicaoPendente, 0),
-		CanalPermissao:         make(chan struct{}, 1),
-		TabelaDrones:           make(map[string]compartilhado.StatusDrone),
-		MissoesEmAndamento:     make(map[string]MissaoEmAndamento),
+		Setor:                   setor,
+		FilaOcorrencias:         make([]compartilhado.Ocorrencia, 0),
+		RelogioLamport:          0,
+		EstadoMutex:             "RELEASED",
+		RespostasAguardadas:     0,
+		RelogioMinhaRequisicao:  0,
+		CritMinhaRequisicao:     0,
+		TimestampMinhaRequisicao: time.Time{},
+		RequisicoesPendentes:    make([]RequisicaoPendente, 0),
+		CanalPermissao:          make(chan struct{}, 1),
+		TabelaDrones:            make(map[string]compartilhado.StatusDrone),
+		MissoesEmAndamento:      make(map[string]MissaoEmAndamento),
 	}
 }
 
@@ -81,9 +95,6 @@ func (e *EstadoGerenciador) ConcluirMissao(droneID string) {
 // ============================================================
 // ADICIONAR OCORRENCIA
 // ============================================================
-// CORREÇÃO DO DEADLOCK: liberamos o lock ANTES de qualquer I/O
-// (print e logger). LogarEstado adquire o lock internamente,
-// então não pode ser chamado enquanto o lock está segurado.
 func (e *EstadoGerenciador) AdicionarOcorrencia(novaOcorrencia compartilhado.Ocorrencia) {
 	e.Mu.Lock()
 
@@ -97,7 +108,6 @@ func (e *EstadoGerenciador) AdicionarOcorrencia(novaOcorrencia compartilhado.Oco
 		return e.FilaOcorrencias[i].Timestamp.Before(e.FilaOcorrencias[j].Timestamp)
 	})
 
-	// Copia para usar fora do lock
 	filaCopia := make([]compartilhado.Ocorrencia, len(e.FilaOcorrencias))
 	copy(filaCopia, e.FilaOcorrencias)
 	tabelaCopia := copiarTabela(e.TabelaDrones)
@@ -105,7 +115,7 @@ func (e *EstadoGerenciador) AdicionarOcorrencia(novaOcorrencia compartilhado.Oco
 	mutex := e.EstadoMutex
 	relogio := e.RelogioLamport
 
-	e.Mu.Unlock() // libera ANTES de qualquer I/O
+	e.Mu.Unlock()
 
 	msg := fmt.Sprintf("Nova ocorrência: %s (crit %d) do sensor %s",
 		novaOcorrencia.TipoEvento, novaOcorrencia.Criticidade, novaOcorrencia.IDSensor)
@@ -125,6 +135,28 @@ func (e *EstadoGerenciador) SincronizarRelogio(relogioRecebido int) {
 }
 
 // ============================================================
+// TOPO FILA — retorna a próxima ocorrência sem removê-la
+// ============================================================
+// Usado pelo loopDespacho para verificar preempção de prioridade
+// após obter o HELD: se chegou algo mais urgente durante a espera
+// pelos REPLYs, o ciclo atual devolve a ocorrência e libera o mutex.
+func (e *EstadoGerenciador) TopoFila() *compartilhado.Ocorrencia {
+	e.Mu.Lock()
+	defer e.Mu.Unlock()
+	return e.TopoFilaSemLock()
+}
+
+// TopoFilaSemLock — versão sem lock, para uso quando Mu já está segurado
+// pelo chamador
+func (e *EstadoGerenciador) TopoFilaSemLock() *compartilhado.Ocorrencia {
+	if len(e.FilaOcorrencias) == 0 {
+		return nil
+	}
+	copia := e.FilaOcorrencias[0]
+	return &copia
+}
+
+// ============================================================
 // PROXIMA OCORRENCIA
 // ============================================================
 func (e *EstadoGerenciador) ProximaOcorrencia() *compartilhado.Ocorrencia {
@@ -139,7 +171,7 @@ func (e *EstadoGerenciador) ProximaOcorrencia() *compartilhado.Ocorrencia {
 }
 
 // ============================================================
-// BUSCAR DRONE LIVRE — cópia explícita (evita bug de ponteiro em map)
+// BUSCAR DRONE LIVRE
 // ============================================================
 func (e *EstadoGerenciador) BuscarDroneLivre() *compartilhado.StatusDrone {
 	e.Mu.Lock()
@@ -154,10 +186,8 @@ func (e *EstadoGerenciador) BuscarDroneLivre() *compartilhado.StatusDrone {
 }
 
 // ============================================================
-// SETOR JA ATENDIDO — verifica se o setor tem drone EM_MISSAO
+// SETOR JA ATENDIDO 
 // ============================================================
-// Usado APENAS para decidir se deve mandar mais um drone,
-// NÃO para descartar a ocorrência.
 func (e *EstadoGerenciador) SetorJaAtendido(setor string) bool {
 	e.Mu.Lock()
 	defer e.Mu.Unlock()
@@ -170,30 +200,43 @@ func (e *EstadoGerenciador) SetorJaAtendido(setor string) bool {
 }
 
 // ============================================================
-// REMOVER DRONES OFFLINE — limpa tabela de drones inativos
+// MARCAR DRONE OFFLINE 
 // ============================================================
-// Chamado pelo health check para drones que não respondem TCP.
-// Retorna a missão que estava sendo executada (se houver) para
-// que o chamador possa re-enfileirar a ocorrência.
-func (e *EstadoGerenciador) MarcarDroneOffline(droneID string) (missao *MissaoEmAndamento) {
+func (e *EstadoGerenciador) MarcarDroneOffline(droneID string) *MissaoEmAndamento {
 	e.Mu.Lock()
-
-	// Reverte status e limpa setor vinculado
 	if d, ok := e.TabelaDrones[droneID]; ok {
 		d.Status = "DISPONIVEL"
 		d.Setor = ""
 		e.TabelaDrones[droneID] = d
 	}
-
-	// Recupera missão em andamento, se houver
+	var missao *MissaoEmAndamento
 	if m, ok := e.MissoesEmAndamento[droneID]; ok {
 		copia := m
 		missao = &copia
 		delete(e.MissoesEmAndamento, droneID)
 	}
-
 	e.Mu.Unlock()
 	return missao
+}
+
+// ============================================================
+// ORDENAR PENDENTES — aplica a mesma lógica de prioridade do desempate
+// ============================================================
+// Chamado em LiberarRecurso antes de enviar REPLYs.
+// Garante que o pendente de maior prioridade receba REPLY primeiro,
+// tornando a fila distribuída corretamente ordenada.
+
+func OrdenarPendentes(fila []RequisicaoPendente) {
+	sort.SliceStable(fila, func(i, j int) bool {
+		a, b := fila[i], fila[j]
+		if a.Criticidade != b.Criticidade {
+			return a.Criticidade > b.Criticidade
+		}
+		if !a.TimestampOcorrencia.Equal(b.TimestampOcorrencia) {
+			return a.TimestampOcorrencia.Before(b.TimestampOcorrencia)
+		}
+		return a.SetorOrigem < b.SetorOrigem
+	})
 }
 
 // ============================================================

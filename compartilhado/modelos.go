@@ -1,44 +1,39 @@
-package compartilhado 
+package compartilhado
 
 import "time"
 
-
-// Ocorrencia representa um evento detecdado na região monitorada 
-// Esta estrutura é usada para comunicar situações que podem exigir envios de drones
+// Ocorrencia representa um evento detectado na região monitorada.
 type Ocorrencia struct {
-	IDSensor   string    `json:"id_sensor"` // Identifica qual sensor fez a detecção 
-	Setor	   string	 `json:"setor"` // Setor marítmo onde a ocorrência foi detectada 
-	TipoEvento string	 `json:"tipo_evento"` // Tipo: bloqueio, embarcação à deriva...
-	Criticidade int		 `json:"criticidade"` // Nível de gravidade (ex: 1 a 5) - usado para priorização 
-	Timestamp time.Time  `json:"timestamp"` // Momento exato da detecção da ocorrência 
+	IDSensor    string    `json:"id_sensor"`
+	Setor       string    `json:"setor"`
+	TipoEvento  string    `json:"tipo_evento"`
+	Criticidade int       `json:"criticidade"`
+	Timestamp   time.Time `json:"timestamp"` // momento da detecção pelo sensor
 }
 
-
-// MensagemP2P define o formato das mensagens trocadas entre os setores 
-// Como nn há servidor central, os setores se comunicam diretamente via P2P 
+// MensagemP2P define o formato das mensagens trocadas entre setores.
 type MensagemP2P struct {
-	TipoMensagem string `json:"tipo_mensagem"` // Tipo: Requisição, Resposta, Alocação, Liberação...
-	SetorOrigem  string `json:"setor_origem"` // Setor que está enviando a mensagem 
-	SetorDestino string `json:"setor_destino"` // Setor destinatário 
-	Relogio      int    `json:"relogio"` // Relógio lógico de lamport para ordenar eventos 
-	Prioridade   int    `json:"prioridade"` // Prioridade de mensagem - baseada na criticidade e tempo de espera
-	Payload      string `json:"payload"` // Dados da mensagem em JSON (ex: StatusDrone, RequisiçãoDrone)
+	TipoMensagem        string    `json:"tipo_mensagem"`
+	SetorOrigem         string    `json:"setor_origem"`
+	SetorDestino        string    `json:"setor_destino"`
+	Relogio             int       `json:"relogio"`
+	Prioridade          int       `json:"prioridade"`          // criticidade da ocorrência
+	TimestampOcorrencia time.Time `json:"timestamp_ocorrencia"` // NOVO: timestamp real da detecção
+	                                                             // Permite desempatar por chegada
+	                                                             // real quando criticidades iguais
+	Payload             string    `json:"payload"`
 }
 
-
-// StatusDrone representa o estado atual de um drone na frota compartilhada 
-// Como os drones são recursos distribuídos entre setores, esta estrutura permite rastrear cada drone
+// StatusDrone representa o estado atual de um drone na frota compartilhada.
 type StatusDrone struct {
-	IDDrone  string `json:"id_drone"` // Identificador único do drone
-	Endereco string `json:"endereco"` // IP e Porta onde o drone pode ser conectado diretamente 
-	Setor    string `json:"setor"` // Setor onde o drone está atualmente 
-	Status   string `json:"status"`	// Situação: disponível, em missão...
+	IDDrone  string `json:"id_drone"`
+	Endereco string `json:"endereco"`
+	Setor    string `json:"setor"`
+	Status   string `json:"status"`
 }
 
-
-// ComandoDrone define instruções enviadas pelos setores para controlar os drones
-// Usado para despachar drones para atender ocorrências
+// ComandoDrone define instruções enviadas pelos setores para controlar os drones.
 type ComandoDrone struct {
-	Acao	string 	`json:"acao"` // Ação a executar: inspecionar, retornar, cancelar...
-	Localizacao  string `json:"localizacao"` // Setor de destino para a ação
+	Acao        string `json:"acao"`
+	Localizacao string `json:"localizacao"`
 }
