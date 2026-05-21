@@ -1,0 +1,24 @@
+# --- ETAPA 1: COMPILAÇÃO ---
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod ./
+# COPY go.sum ./
+
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o drone_bin aplicacoes/drone/main.go
+
+# --- ETAPA 2: EXECUÇÃO ---
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+COPY --from=builder /app/drone_bin .
+
+ENTRYPOINT ["./drone_bin"]

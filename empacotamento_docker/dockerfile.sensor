@@ -1,0 +1,38 @@
+# --- ETAPA 1: COMPILAÇÃO (BUILDER) ---
+# Usamos a imagem oficial do Go com Alpine (uma versão leve do Linux)
+FROM golang:1.21-alpine AS builder
+
+# Define a pasta de trabalho dentro do contêiner
+WORKDIR /app
+
+# Copia os arquivos de dependências primeiro (otimiza o cache do Docker)
+COPY go.mod ./
+# Se você tiver um go.sum, descomente a linha abaixo:
+# COPY go.sum ./
+
+# Baixa as dependências (se houver)
+RUN go mod download
+
+# Copia todo o código do projeto para dentro do contêiner
+COPY . .
+
+# Compila o código do sensor. 
+# CGO_ENABLED=0 garante que o binário seja estático (não dependa de bibliotecas do sistema)
+# O binário final se chamará "sensor_bin"
+RUN CGO_ENABLED=0 GOOS=linux go build -o sensor_bin aplicacoes/sensor/main.go
+
+# --- ETAPA 2: EXECUÇÃO (FINAL) ---
+# Começamos uma imagem do zero, usando apenas o Alpine Linux puro (minúsculo!)
+FROM alpine:latest
+
+# Instala certificados de segurança (boa prática, embora não usemos HTTPS aqui)
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+# Copiamos apenas o binário que compilamos na Etapa 1
+COPY --from=builder /app/sensor_bin .
+
+# ENTRYPOINT define que o contêiner vai rodar o binário assim que ligar.
+# Ele permite que a gente passe os argumentos (IP e Setor) depois.
+ENTRYPOINT ["./sensor_bin"]

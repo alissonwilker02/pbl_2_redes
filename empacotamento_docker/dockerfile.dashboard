@@ -1,0 +1,26 @@
+# --- ETAPA 1: COMPILAÇÃO ---
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+COPY go.mod ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o dashboard_bin aplicacoes/dashboard/dashboard.go
+
+# --- ETAPA 2: EXECUÇÃO ---
+FROM alpine:latest
+
+# ncurses para o comando tput (calcula largura do terminal)
+RUN apk --no-cache add ca-certificates ncurses
+
+WORKDIR /root/
+
+COPY --from=builder /app/dashboard_bin .
+
+# O dashboard lê /tmp/estado_setor_X.json
+# Use volume compartilhado com os gerenciadores:
+# docker run -v /tmp:/tmp alissonwilkersc/dashboard:v1
+ENTRYPOINT ["./dashboard_bin"]

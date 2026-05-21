@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  # GERENCIADORES (A, B, C)
+  gerenciador_a:
+    build: { context: ., dockerfile: dockerfile.gerenciador }
+    container_name: gerenciador_a
+    networks: [malha_ormuz]
+    ports: ["5000:5000", "6000:6000"]
+    command: ["A", "5000", "6000", "B:gerenciador_b:6001", "C:gerenciador_c:6002"]
+
+  # ... (Gerenciadores B e C seguem a mesma lógica de portas)
+
+  # DRONES (Recursos que agora informam seu status para a malha P2P)
+  drone_01:
+    build: { context: ., dockerfile: dockerfile.drone }
+    container_name: drone_01
+    networks: [malha_ormuz]
+    # Comandos: <ID> <Porta_Local> <Gerenciadores...>
+    command: ["drone_01", "7001", "gerenciador_a:6000", "gerenciador_b:6001", "gerenciador_c:6002"]
+
+  # ... (Sensores seguem apontando para seus respectivos gerenciadores)
+
+networks:
+  malha_ormuz:
+    driver: bridge

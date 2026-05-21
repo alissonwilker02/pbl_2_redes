@@ -1,0 +1,32 @@
+# --- ETAPA 1: COMPILAÇÃO ---
+FROM golang:1.21-alpine AS builder
+
+# Define a pasta de trabalho dentro do contêiner
+WORKDIR /app
+
+# Copia os arquivos de dependências
+COPY go.mod ./
+# COPY go.sum ./
+
+# Baixa as dependências
+RUN go mod download
+
+# Copia todo o código do projeto para o contêiner [cite: 4]
+COPY . .
+
+# Compila o binário do gerenciador (que agora tem o Despacho Real e Tabela Replicada) 
+RUN CGO_ENABLED=0 GOOS=linux go build -o gerenciador_bin aplicacoes/gerenciador/main.go
+
+# --- ETAPA 2: EXECUÇÃO ---
+FROM alpine:latest
+
+# Instala certificados básicos de segurança
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+# Copia apenas o binário compilado da etapa anterior
+COPY --from=builder /app/gerenciador_bin .
+
+# Define o ponto de entrada [cite: 6]
+ENTRYPOINT ["./gerenciador_bin"]
