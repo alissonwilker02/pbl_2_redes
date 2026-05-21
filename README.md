@@ -16,7 +16,7 @@ Para cumprir os rigorosos requisitos de concorrência e evitar a duplicação de
 
 1. **Algoritmo de Ricart-Agrawala:** Garante a Exclusão Mútua Distribuída. Apenas um setor pode aceder à frota de drones e alocar um recurso num dado instante. Implementado com tolerância a falhas (Reply implícito por timeout).
 2. **Relógios Lógicos de Lamport:** Utilizados no algoritmo de exclusão mútua para garantir a ordenação causal dos eventos e resolver empates de requisições concorrentes.
-3. **Protocolo Gossip (Disseminação):** Mecanismo de consistência eventual onde as mudanças de estado dos drones são propagadas ("contagiadas") pela malha P2P, mantendo a tabela de recursos replicada em todos os nós.
+3. **Protocolo Gossip (Disseminação):** Mecanismo de consistência eventual onde as mudanças de estado dos drones são propagadas pela malha P2P, mantendo a tabela de recursos replicada em todos os nós.
 4. **Fila de Prioridades Dupla:** Ordenação estável baseada na criticidade do evento (descendente) e no Timestamp de chegada (ascendente).
 
 ##  Tecnologias Utilizadas
