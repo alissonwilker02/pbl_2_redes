@@ -18,7 +18,7 @@ type MensagemP2P struct {
 	SetorDestino        string    `json:"setor_destino"`
 	Relogio             int       `json:"relogio"`
 	Prioridade          int       `json:"prioridade"`          // criticidade da ocorrência
-	TimestampOcorrencia time.Time `json:"timestamp_ocorrencia"` // NOVO: timestamp real da detecção
+	TimestampOcorrencia time.Time `json:"timestamp_ocorrencia"` // timestamp real da detecção
 	                                                             // Permite desempatar por chegada
 	                                                             // real quando criticidades iguais
 	Payload             string    `json:"payload"`
