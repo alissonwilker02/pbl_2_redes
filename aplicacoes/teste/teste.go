@@ -44,7 +44,7 @@ func main() {
 
 	// ─────────────────────────────────────────────────────────────
 	// TESTE 1 — Dois setores disputam drone ao mesmo tempo
-	// Demonstra o algoritmo de Ricart-Agrawala em ação:
+	// Demonstra o algoritmo de Ricart-Agrawala:
 	// ambos enviam REQUEST, apenas um entra em HELD por vez.
 	// ─────────────────────────────────────────────────────────────
 	executarTeste(1,
@@ -139,7 +139,7 @@ func main() {
 
 	// ─────────────────────────────────────────────────────────────
 	// TESTE 4 — Tolerância a falhas: setor cai, sistema continua
-	// Envia ocorrências para setores B e C. Setor A está "fora".
+	// Envia ocorrências para setores B e C. Setor A está fora.
 	// O algoritmo de Ricart-Agrawala trata o silêncio de A como
 	// REPLY implícito (timeout + ProcessarReply automático).
 	// Sistema continua funcionando normalmente.
@@ -152,7 +152,7 @@ func main() {
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Só B e C enviam — A está "fora" (não enviamos nada pra A,
+			// Só B e C enviam — A está fora (não enviamos nada pra A,
 			// mas B e C vão tentar contactá-lo no Ricart-Agrawala e receber timeout)
 			go func() {
 				defer wg.Done()

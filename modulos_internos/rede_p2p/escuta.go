@@ -62,7 +62,7 @@ func processarMensagemVizinho(
 
 	// Loop contínuo lendo mensagens deste vizinho
 	for {
-		// Lê até newline (cada mensagem é um JSON terminado com \n)
+		// Lê até newline 
 		bytesRecebidos, erro := leitor.ReadBytes('\n')
 		if erro != nil {
 			return // Vizinho desconectou ou conexão perdida
@@ -78,8 +78,6 @@ func processarMensagemVizinho(
 		// SINCRONIZAÇÃO DE RELÓGIO DE LAMPORT
 		// ==========================================
 		// A cada mensagem recebida, atualiza o relógio lógico
-		// Isso permite ordenar eventos causalmente no sistema distribuído
-		// Regra: relogio_local = max(relogio_local, relogio_mensagem) + 1
 		estado.SincronizarRelogio(msg.Relogio)
 
 		// ==========================================
@@ -132,7 +130,7 @@ func processarMensagemVizinho(
 				statusAnterior = droneExistente.Status
 
 				// =========================================================
-				// CORREÇÃO E PROTEÇÃO DE ESTADO (REQUISITO 3)
+				// CORREÇÃO E PROTEÇÃO DE ESTADO 
 				// =========================================================
 				// Evita que pacotes de status parciais decodificados limpem o 
 				// setor associado. Se o drone reportar que está em missão mas 
@@ -153,18 +151,17 @@ func processarMensagemVizinho(
 			servidor_local.LogarEstado(estado, fmt.Sprintf("Drone %s → %s",
     		statusDrone.IDDrone, statusDrone.Status))
 
-			// CORREÇÃO 2: Re-broadcast P2P para consistência eventual (Gossip)
+			// Re-broadcast P2P (Gossip)
 			// ===============================================================
 			// Se for uma mudança de status nova, repassa para outros vizinhos.
-			// Isso implementa um protocolo de DISSEMINAÇÃO / GOSSIP:
+			//protocolo de DISSEMINAÇÃO / GOSSIP:
 			// - A informação se espalha de forma confiável pela malha P2P.
-			// - Evita pontos únicos de falha e tolera perda de pacotes transientes.
+			// - Evita pontos únicos de falha e tolera perda de pacotes.
 			if statusAnterior != statusDrone.Status {
 				fmt.Printf("\n[MALHA P2P] Atualização de Estado: %s agora está %s (Disseminando via Gossip)\n",
 					statusDrone.IDDrone, statusDrone.Status)
 
 				// Reenvia a mesma mensagem para todos os vizinhos
-				// Cada mensagem é repassada no máximo N vezes evitando loops infinitos
 				exclusaomutua.BroadcastParaVizinhos(msg, vizinhos, estado)
 			}
 

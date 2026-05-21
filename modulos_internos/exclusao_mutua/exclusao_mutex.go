@@ -15,27 +15,20 @@ import (
 //
 // Este pacote implementa a camada de comunicação peer-to-peer com foco no
 // algoritmo de exclusão mútua distribuída (Ricart-Agrawala) e resiliência
-// a falhas de rede/equipamentos, conforme exigido pelo problema.
+// a falhas de rede/equipamentos.
 
 // ============================================================
 // BROADCAST PARA VIZINHOS - Envia mensagem para todos os setores
 // ============================================================
 // Função principal para enviar mensagens P2P (especialmente REQUEST)
 // para todos os outros setores da malha.
-//
-// Adicionamos o parâmetro 'estado' para garantir que, se um vizinho estiver offline,
-// o sistema não fique preso esperando uma resposta que nunca virá (deadlock).
-//
-// Esta função é CRÍTICA para o algoritmo de exclusão mútua pois:
-// - Quando um setor quer alocar um drone, ele envia REQUEST para TODOS os outros
-// - Precisa receber REPLY de TODOS para prosseguir
-// - Se algum vizinho falhar, o sistema não pode travar (tolerância a falhas)
+
 func BroadcastParaVizinhos(msg compartilhado.MensagemP2P, vizinhos []string, estado *servidor_local.EstadoGerenciador) {
-	// Serializa a mensagem uma única vez (reutilizada para todos os vizinhos)
+	// Serializa a mensagem uma única vez 
 	dadosJSON, _ := json.Marshal(msg)
 	dadosJSON = append(dadosJSON, '\n')
 
-	// Para cada vizinho (setor), envia a mensagem
+	// Para cada vizinho , envia a mensagem
 	for _, vizinho := range vizinhos {
 		// Goroutine separada para cada envio - evita que um vizinho lento
 		// ou offline bloqueie o envio para os outros
@@ -56,13 +49,6 @@ func BroadcastParaVizinhos(msg compartilhado.MensagemP2P, vizinhos []string, est
 				//
 				// Isso decrementa o contador 'RespostasAguardadas' do estado,
 				// permitindo que o setor prossiga mesmo com falhas na rede.
-				//
-				// POR QUE ISSO É NECESSÁRIO:
-				// O algoritmo de Ricart-Agrawala tradicional espera REPLY de TODOS.
-				// Se um vizinho falhar permanentemente, o sistema entraria em DEADLOCK.
-				// Esta correção trata o silêncio do vizinho como um "REPLY implícito".
-				//
-				// ATENDE AO REQUISITO: "nenhuma solução centralizada e tolerância a falhas"
 				if msg.TipoMensagem == "REQUEST" {
 					log.Printf("[MUTEX] Ignorando silêncio de %s e assumindo permissão por falha.", endereco)
 					ProcessarReply(estado) // Decrementa RespostasAguardadas
@@ -77,15 +63,11 @@ func BroadcastParaVizinhos(msg compartilhado.MensagemP2P, vizinhos []string, est
 }
 
 // ============================================================
-// ENVIAR PARA VIZINHO - Mensagem direta para um único setor
+// ENVIAR PARA VIZINHO 
 // ============================================================
 // Usado principalmente para enviar REPLY como resposta a um REQUEST específico.
 // Diferente do Broadcast, envia apenas para um destinatário.
-//
-// Exemplo de uso:
-//   - Setor B recebe REQUEST do Setor A
-//   - B decide que pode dar permissão (não está em HELD ou prioridade menor)
-//   - B chama EnviarParaVizinho com REPLY para o endereço de A
+
 func EnviarParaVizinho(msg compartilhado.MensagemP2P, endereco string) {
 	// Serializa a mensagem para JSON
 	dadosJSON, _ := json.Marshal(msg)
@@ -123,10 +105,10 @@ func EnviarParaVizinho(msg compartilhado.MensagemP2P, endereco string) {
 //    - Se RespostasAguardadas == 0: desbloqueia (entra em "HELD")
 //    - Pode então alocar o drone com segurança
 //
-// 4. Tolerância a falhas (CORREÇÃO 2 e 3):
+// 4. Tolerância a falhas:
 //    - Se um vizinho não responde (timeout + erro), chamamos ProcessarReply
 //    - Isso decrementa RespostasAguardadas mesmo sem REPLY real
-//    - Sistema prossegue mesmo com falhas de até (N-1) setores
+//    - Sistema prossegue mesmo com falhas 
 //
 // 5. Liberação do drone:
 //    - estado.EstadoMutex = "RELEASED"

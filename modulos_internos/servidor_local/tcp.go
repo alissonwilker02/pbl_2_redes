@@ -32,9 +32,8 @@ func IniciarServidorLocal(porta string, estado *EstadoGerenciador) {
 			continue
 		}
 
-		// Cada sensor conectado ganha sua própria goroutine (thread leve)
+		// Cada sensor conectado ganha sua própria goroutine
 		// Isso permite que múltiplos sensores enviem dados simultaneamente
-		// Atende ao requisito de "grande volume de eventos simultâneos"
 		go lidarComDispositivo(conexao, estado)
 	}
 }
@@ -48,7 +47,7 @@ func lidarComDispositivo(conexao net.Conn, estado *EstadoGerenciador) {
 	
 	// Loop contínuo de leitura das mensagens enviadas pelo sensor
 	for {
-		// Lê até encontrar '\n' (cada mensagem JSON é terminada com quebra de linha)
+		// Lê até encontrar '\n' 
 		bytesRecebidos, erro := leitor.ReadBytes('\n')
 		if erro != nil {
 			return // Sensor desconectou ou perdeu conexão - encerra esta goroutine
@@ -66,25 +65,20 @@ func lidarComDispositivo(conexao net.Conn, estado *EstadoGerenciador) {
 		// ==========================================
 		// TRAVA DE EXCLUSIVIDADE - VERIFICAÇÃO DE SEGURANÇA
 		// ==========================================
-		// CORREÇÃO 4: Impede que sensores de um setor enviem dados para outro setor
-		// Isso é CRÍTICO no sistema distribuído porque:
-		// 1. Cada setor gerencia apenas seus próprios sensores
-		// 2. Evita poluição de dados entre setores
-		// 3. Sem essa trava, um sensor malicioso ou mal configurado poderia causar confusão
+		// Impede que sensores de um setor enviem dados para outro setor
 		if dadoRecebido.Setor != estado.Setor {
 			fmt.Printf("\n[ALERTA DE SEGURANÇA] Sensor '%s' (Setor %s) tentou conectar ao Setor %s. Encerrando conexão.\n", 
 				dadoRecebido.IDSensor, dadoRecebido.Setor, estado.Setor)
 			
 			// O return encerra a goroutine e fecha a conexão
-			// O sensor terá que se reconectar (já implementado no código do sensor com reconexão automática)
 			return 
 		}
 
-		// Adiciona a ocorrência à fila/estado do gerenciador do setor
+		// Adiciona a ocorrência à fila do gerenciador do setor
 		// Aqui pode disparar lógica de alocação de drones se a ocorrência for crítica
 		estado.AdicionarOcorrencia(dadoRecebido)
 
-		// Log da ocorrência recebida com timestamp para depuração
+		// Log da ocorrência recebida com timestamp 
 		fmt.Printf("[%s] Recebido do %s | Evento: %s | Criticidade: %d\n", 
 			dadoRecebido.Timestamp.Format("15:04:05"), 
 			dadoRecebido.IDSensor, 
