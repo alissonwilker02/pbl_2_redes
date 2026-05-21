@@ -12,7 +12,7 @@ Diferente do Problema 1 (que adotava um Broker Central em formato Cliente-Servid
 
 **CAMADA DE DETEÇÃO (IoT)**
 - `Sensor Automático` - Emula deteções na rede e gera ocorrências autônomas (TCP)
-- `Sensor Manual` - Interface interativa para injeção manual de anomalias (TCP)
+- `Sensor Manual` - Interface interativa para injeção manual de dados (TCP)
 
 **CAMADA DE GERENCIAMENTO (P2P)**
 - `Gerenciador de Setor (A, B, C)` - Atua como Broker do próprio setor. Mantém filas de prioridades e coordena uso da frota.
